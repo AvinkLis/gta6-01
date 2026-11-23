@@ -12,8 +12,8 @@
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
@@ -39,3 +39,50 @@ writeFileSync(
     game_path_max_bytes: 1000,
   }),
 );
+
+// --- Block City wrapper (this entry's own bookkeeping, written for gta6-01) ---
+// The plumbing above hands the game in; everything below is extra and strictly
+// read-only towards the game. It narrates the hand-in on stderr so a human
+// watching the run can follow along, and once dossier.json is safely on disk
+// it writes a small manifest.json beside it: the game's title lifted out of
+// its own page, every file the game ships with its size in bytes, and how
+// many screenshots ride along. The manifest is written after the dossier and
+// only ever reads the copied output, so neither the dossier's bytes nor the
+// game files themselves are touched by it.
+
+function note(step: string, detail: string): void {
+  process.stderr.write(`[block-city] ${step}: ${detail}\n`);
+}
+
+function inventory(root: string, base: string): { path: string; bytes: number }[] {
+  const found: { path: string; bytes: number }[] = [];
+  const walk = (dir: string): void => {
+    for (const name of readdirSync(dir).sort()) {
+      const full = join(dir, name);
+      const st = statSync(full);
+      if (st.isDirectory()) walk(full);
+      else found.push({ path: relative(base, full), bytes: st.size });
+    }
+  };
+  walk(root);
+  return found;
+}
+
+note('hand-in', `game and screenshots copied to ${out}`);
+note('dossier', 'dossier.json written for the judge');
+
+const gameInventory = inventory(join(out, 'game'), out);
+const shotInventory = existsSync(join(out, 'screenshots')) ? inventory(join(out, 'screenshots'), out) : [];
+const page = readFileSync(join(out, 'game', 'index.html'), 'utf8');
+const gameTitle = /<title>([^<]+)<\/title>/.exec(page)?.[1] ?? 'Grand Theft: Block City';
+const manifest = {
+  game: gameTitle,
+  competition: 'gta6-01',
+  game_files: gameInventory,
+  game_file_count: gameInventory.length,
+  game_total_bytes: gameInventory.reduce((sum, f) => sum + f.bytes, 0),
+  screenshots: shotInventory,
+  screenshot_count: shotInventory.length,
+};
+writeFileSync(join(out, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+note('manifest', `${gameInventory.length} game files (${manifest.game_total_bytes} bytes), ${shotInventory.length} screenshots -> manifest.json`);
